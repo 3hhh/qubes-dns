@@ -1,0 +1,177 @@
+#!/bin/bash
+#
+# See usage()!
+#
+# Copyright (C) 2021  David Hobach  GPLv3
+# version: 0.6
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+# 
+
+source blib
+eval "$B_SCRIPT"
+
+source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E }
+
+#name of the iptables chain created by this script
+IPT_FILTER_CHAIN="dns_client_filter"
+IPT_NAT_CHAIN="dns_client_nat"
+
+function usage {
+echo "dns_client setup|firewall-update [DNS server IP]
+
+Utility script for a proxy VM (provides_network=true) to use the given DNS server instead of the default Qubes OS one.
+All VMs using that proxy VM will then use that DNS server afterwards.
+
+To enable it, you must change the proxy VM as follows:
+- insert dns_client setup [DNS server IP] inside /rw/config/rc.local
+- insert dns_client firewall-update [DNS server IP] inside /rw/config/qubes-firewall-user-script"
+exit 1
+}
+
+function assertFirewallService {
+#cf. https://github.com/QubesOS/qubes-issues/issues/3269 why it's good to check the firewall service is up
+systemctl status qubes-firewall > /dev/null || { B_ERR="The qubes-firewall service appears to be down! This is certainly an issue. Please investigate!" ; B_E }
+}
+
+function log {
+local msg="$1"
+logger -t "$B_SCRIPT_NAME" -p user.info "$msg"
+}
+
+function setupR {
+local dnsServer="$1"
+
+log "setup started..."
+assertFirewallService
+
+#update /etc/resolv.conf
+cp -f "$RESOLV" "$RESOLV.bak" || { B_ERR="Failed to copy $RESOLV." ; B_E }
+echo "nameserver $dnsServer" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV." ; B_E }
+
+#make sure the DNS server changes are reflected by the Qubes DNAT rules
+#NOTE: currently not really needed as we do our own DNAT below
+#/usr/lib/qubes/qubes-setup-dnat-to-ns || { B_ERR="Failed to setup the Qubes OS DNAT rules. Not run inside a proxy VM?" ; B_E }
+
+#FORCE usage of the unbound DNS server regardless of what DNS server the upstream VMs are using
+#prevents misconfigured clients
+#prevents malware or strange client implementations from playing with custom DNS servers
+#the next two lines redirect all DNS requests to the local unbound DNS server
+iptables -t nat -N "$IPT_NAT_CHAIN" || { B_ERR="Failed to create the iptables NAT chain $IPT_NAT_CHAIN. Maybe it already exists?" ; B_E }
+( set -e
+  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s $dnsServer ! -d $dnsServer -p udp --dport 53 -j DNAT --to ${dnsServer}:53
+  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s $dnsServer ! -d $dnsServer -p tcp --dport 53 -j DNAT --to ${dnsServer}:53
+  iptables -t nat -I PREROUTING -j "$IPT_NAT_CHAIN"
+)
+[ $? -ne 0 ] && B_ERR="Failed to setup some of the iptables DNAT rules. Please investigate!" && B_E
+
+#allow traffic to the DNS server from other VMs and the other way around
+iptables -N "$IPT_FILTER_CHAIN" || { B_ERR="Failed to create the iptables FILTER chain $IPT_FILTER_CHAIN. Maybe it already exists?" ; B_E }
+( set -e
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d $dnsServer/32 -p tcp --dport 53 -j ACCEPT
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d $dnsServer/32 -p udp --dport 53 -j ACCEPT
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s $dnsServer/32 -p tcp --sport 53 -j ACCEPT
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s $dnsServer/32 -p tcp --sport 53 -j ACCEPT
+)
+[ $? -ne 0 ] && B_ERR="Failed to setup some of the iptables FILTER rules. Please investigate!" && B_E
+
+#add $IPT_FILTER_CHAIN to the FORWARD chain
+#the FORWARD chain is expected to look like
+# [...]
+# -A FORWARD -j QBS-FORWARD
+# [ADD HERE] 
+# -A FORWARD -i vif+ -o vif+ -j DROP
+# [...]
+#NOTE: this is fully compatible to the VPN installForwardDropDefaultRule() - the order in which any of them is executed doesn't matter (only both changes at the same time wouldn't be good, but the DNS VM is meant to be started only after the VPN is up anyway)
+local ipt rule rules
+ipt="$(iptables-save)" || { B_ERR="Failed to get the iptables rules." ; B_E }
+rules=""
+local found=1
+while IFS= read -r rule ; do
+  if [[ "$rule" == "-A FORWARD -i vif+ -o vif+ -j DROP" ]] ; then
+    rule="-A FORWARD -j $IPT_FILTER_CHAIN"$'\n'"$rule"
+    found=0
+  fi
+  rules="$rules"$'\n'"$rule"
+done <<< "$ipt"
+[ $found -eq 0 ] || { B_ERR="Didn't find the location to add the custom iptables rule. Programming mistake?! Please investigate!" ; B_E }
+iptables-restore <<< "$rules" || { B_ERR="Failed to set the iptables rules." ; B_E }
+
+log "setup done"
+return 0
+}
+
+function firewallUpdateR {
+local dnsServer="$1"
+#NOTE: Actually we don't need to do anything here, but we only _check_ whether everything is still setup correctly (in case Qubes OS suddenly does things differently than ever before).
+
+log "firewall-update started..."
+
+#NOTE:
+#we may be called during setup() --> we silently quit our checks then
+local uptime=
+uptime="$(grep -E -o '^[0-9]+' /proc/uptime)" || { B_ERR="Failed to identify the uptime!" ; B_E }
+[ $uptime -le 30 ] && log "firewall-update right during/after boot. Skipping..." && return 0
+
+assertFirewallService
+
+#make sure /etc/resolv.conf still contains our server
+local out="$(< $RESOLV)"
+[[ "$out" == "nameserver $dnsServer" ]] || { B_ERR="$RESOLV changed on Qubes OS firewall update. This is unexpected. Please investigate!" ; B_E }
+
+#make sure our custom iptables chains still exists
+iptables -N "$IPT_FILTER_CHAIN" &> /dev/null && B_ERR="$IPT_FILTER_CHAIN had to be recreated on Qubes OS firewall update. That is unexpected.. Please investigate!" && B_E
+iptables -t nat -N "$IPT_NAT_CHAIN" &> /dev/null && B_ERR="$IPT_NAT_CHAIN had to be recreated on Qubes OS firewall update. That is unexpected.. Please investigate!" && B_E
+
+#make sure the jump to our custom chain is there
+iptables-save | grep -- "-A FORWARD -j $IPT_FILTER_CHAIN" > /dev/null
+[ $? -ne 0 ] && B_ERR="Failed to find the jump to the $IPT_FILTER_CHAIN on Qubes OS firewall update. Please investigate!" && B_E
+
+#check DNS DNAT is in place
+iptables -t nat -L -vn | grep "to:$dnsServer" > /dev/null
+[ $? -ne 0 ] && B_ERR="Failed to find the DNS DNAT on Qubes OS firewall update. Please investigate!" && B_E
+
+#make sure our forced DNS server DNAT is first in the DNAT chain (the Qubes OS DNAT doesn't enforce the DNS servers)
+iptables -t nat -L -vn | head -n3 | grep "$IPT_NAT_CHAIN" > /dev/null
+[ $? -ne 0 ] && B_ERR="Failed to find the forced DNS DNAT on Qubes OS firewall update. Please investigate!" && B_E
+
+log "firewall-update done"
+return 0
+}
+
+################ main ############
+
+b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
+[[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
+
+b_deps "iptables" "iptables-save" "iptables-restore" "whoami" "grep"
+[ $# -lt 1 ] && usage
+#special case: a single parameter may happen, if salt didn't have the correct IP (usually on first run, if sys-dns wasn't created yet)
+[ $# -ne 2 ] && B_ERR="Invalid number of parameters passed. Maybe no sys-dns IP configured @salt? Aborting..." && B_E
+cmd="$1"
+shift
+
+case "$cmd" in
+  "setup")
+    setupR "$@"
+    ;;
+  "firewall-update")
+    firewallUpdateR "$@"
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+# vim: ts=2 sw=2 et

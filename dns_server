@@ -1,0 +1,227 @@
+#!/bin/bash
+#
+# See usage()!
+#
+# IMPORTANT for dev: Make sure that the Qubes firewall still works, i.e. make sure that downstream clients that should _not_ have DNS suddenly have DNS.
+#
+# Copyright (C) 2021  David Hobach  GPLv3
+# version: 0.5
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+
+source blib
+eval "$B_SCRIPT"
+
+b_import "proc"
+
+source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E }
+
+#name of the unbound user
+#(nowadays not really needed anymore as we don't run inside chroot, but unbound appears to fail otherwise anyway)
+UNBOUND_USER="unbound"
+
+#path to the unbound conf to use
+UNBOUND_CONF="$B_SCRIPT_DIR/unbound-config/unbound.conf"
+
+#path to the unbound root hints to use & where to copy it
+UNBOUND_ROOT_HINTS_SOURCE="$B_SCRIPT_DIR/unbound-config/root.hints"
+UNBOUND_ROOT_HINTS_TARGET="/etc/unbound/root.hints"
+
+#path to the unbound root keys to use & where to copy it
+UNBOUND_ROOT_KEYS_SOURCE="$B_SCRIPT_DIR/unbound-config/root.key"
+UNBOUND_ROOT_KEYS_TARGET="/etc/unbound/root.key"
+
+#path to the unbound log
+UNBOUND_LOG="/var/log/unbound.log"
+
+#unbound pidfile as specified in the config
+UNBOUND_PIDFILE="/var/run/unbound.pid"
+
+#folders where the package versions are installed (debian-10: dns-root-data package)
+#these are used to compare whether any updates were done by the package maintainer
+#IMPORTANT: they are NOT automatically installed for security reasons --> that has to be done manually
+#NOTE: unbound-anchor doesn't work with the DNS DNATting used by Qubes OS and should be avoided.
+PACKAGE_ROOT_KEYS="/usr/share/dns/root.key"
+PACKAGE_ROOT_HINTS="/usr/share/dns/root.hints"
+
+#if this file exists, start will wait forever for its removal before doing the actual start (useful to control this script from external scripts)
+WAIT_FILE="/tmp/unbound.wait"
+
+#name of the iptables chain created by this script
+IPT_CHAIN="dns_server"
+
+function usage {
+echo "$B_SCRIPT_NAME start|stop|restart|status
+
+Manage unbound inside a (preferably named disposable) dedicated VM.
+
+Requirements:
+1. That DNS VM MUST be _directly_ connected to the client VM using it as DNS server (e.g. sys-vpn) _without_ any firewall in between.
+2. The client VM MUST be configured with the dns_client script (see there).
+3. Downstream VMs providing network (e.g. sys-vpn) MUST be fully done with their network setup.
+
+unbound cannot be used inside proxy VMs (provides_network = true) as these do DNS DNATing which can bypass the Qubes OS firewall."
+exit 1
+}
+
+function startR {
+getPid &> /dev/null && B_ERR="Another unbound instance appears to be running. Aborting..." && B_E
+b_info "Starting unbound..."
+
+#make sure we do a proper stop on unwanted EXIT
+trap stopR EXIT
+
+#copy the DNS root info & root key for DNSSEC
+local dir="${UNBOUND_ROOT_HINTS_TARGET%/*}"
+chown -R "$UNBOUND_USER:$UNBOUND_USER" "$dir" || { B_ERR="Failed to set the ownership for $dir." ; B_E }
+cp -f "$UNBOUND_ROOT_HINTS_SOURCE" "$UNBOUND_ROOT_HINTS_TARGET" || { B_ERR="Failed to copy $UNBOUND_ROOT_HINTS_SOURCE." ; B_E }
+cp -f "$UNBOUND_ROOT_KEYS_SOURCE" "$UNBOUND_ROOT_KEYS_TARGET" || { B_ERR="Failed to copy $UNBOUND_ROOT_KEYS_SOURCE." ; B_E }
+
+#notify the user on changes done to the DNs roots by the debian package maintainers
+notifyOnDiff "$UNBOUND_ROOT_KEYS_SOURCE" "$PACKAGE_ROOT_KEYS" "The DNSSEC root.key changed according to the package maintainers. Please investigate!"
+notifyOnDiff "$UNBOUND_ROOT_HINTS_SOURCE" "$PACKAGE_ROOT_HINTS" "The DNSSEC root.hints changed according to the package maintainers. Please investigate!"
+
+#create a log file that unbound can write to
+touch "$UNBOUND_LOG" || { B_ERR="Failed to create $UNBOUND_LOG" ; B_E }
+chown "$UNBOUND_USER:$UNBOUND_USER" "$UNBOUND_LOG" || { B_ERR="Failed to pass ownership of the $UNBOUND_LOG." ; B_E }
+chmod 664 "$UNBOUND_LOG" || { B_ERR="Failed to chmod $UNBOUND_LOG." ; B_E }
+
+#wait for the wait file to disappear
+while [ -f "$WAIT_FILE" ] ; do
+  b_info "$WAIT_FILE exists. Waiting for it to be removed..."
+  sleep 1
+done
+
+#start unbound
+unbound -c "$UNBOUND_CONF" || { B_ERR="Failed to start unbound. You might need to fix your config file?!" ; B_E }
+setLocalDNSServer
+allowDNSOnFirewall
+
+#successful start --> remove trap
+trap - EXIT
+
+b_info "unbound was started."
+}
+
+#notify the user, if a diff was found between the two given files
+#notifyOnDiff [old file] [new file] [diff message]
+#returns: zero exit code, if there was no diff, non-zero otherwise
+#@B_E
+function notifyOnDiff {
+local old="$1"
+local new="$2"
+local msg="$3"
+
+if ! diff -q "$old" "$new" > /dev/null ; then
+	notifyMessageHandler 1 "$msg"
+	return 1
+fi
+return 0
+}
+
+function setLocalDNSServer {
+if [ ! -e "$RESOLV_BAK" ] ; then
+  cp -f "$RESOLV" "$RESOLV_BAK" || { B_ERR="Failed to restore $RESOLV_BAK --> $RESOLV" ; B_E }
+fi
+echo "127.0.0.1" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV" ; B_E }
+}
+
+function restoreLocalDNSServer {
+if [ -f "$RESOLV_BAK" ] ; then
+  cp -f "$RESOLV_BAK" "$RESOLV" || { B_ERR="Failed to restore $RESOLV_BAK --> $RESOLV" ; B_E }
+fi
+return 0
+}
+
+
+function allowDNSOnFirewall {
+#put all unbound-specific rules to a dedicated chain
+#we only re-create it, if it's not already there
+if iptables -N "$IPT_CHAIN" 2> /dev/null ; then
+  iptables -I INPUT -j "$IPT_CHAIN" || { B_ERR="iptables issue." ; B_E }
+fi
+
+iptables -F "$IPT_CHAIN"
+iptables -A "$IPT_CHAIN" -p udp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
+iptables -A "$IPT_CHAIN" -p tcp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
+}
+
+function resetFirewall {
+iptables -F "$IPT_CHAIN"
+}
+
+#getPid
+#Get the unbound pid.
+#returns: The pid or sets a non-zero exit code, if unbound is likely stopped.
+#@B_E
+function getPid {
+local ret=
+ret="$(cat "$UNBOUND_PIDFILE" 2> /dev/null)" || return 1
+[ -z "$ret" ] && return 1
+echo "$ret"
+}
+
+#stopUnboundIfNecessary
+#stops the unbound daemon, if unbound is used
+function stopR {
+local pid=
+pid="$(getPid)" || { B_ERR="unbound appears to be stopped." ; B_E }
+b_info "Stopping unbound..."
+resetFirewall
+restoreLocalDNSServer
+kill "$pid" || { B_ERR="Failed to terminate unbound (pid: $pid)." ; B_E }
+b_info "unbound was stopped."
+}
+
+function statusR {
+local pid=
+pid="$(getPid 2> /dev/null)" || { b_info "unbound is stopped." ; return 0 ; }
+if b_proc_pidExists "$pid" ; then
+	b_info "unbound is running."
+	return 0
+else
+	B_ERR="unbound appears to be stopped, but there's a stale pidfile at $UNBOUND_PIDFILE."
+	B_E
+fi
+}
+
+################ main ############
+
+b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
+[[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
+
+b_deps "unbound" "chown" "chmod" "cp" "touch" "mktemp" "whoami" "iptables"
+[ $# -ne 1 ] && usage
+
+case "$1" in
+  "start")
+    startR
+    ;;
+  "stop")
+    stopR
+    ;;
+  "restart")
+    stopR
+    startR
+    ;;
+  "status")
+    statusR
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+# vim: ts=2 sw=2 et

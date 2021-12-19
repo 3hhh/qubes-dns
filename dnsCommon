@@ -1,0 +1,61 @@
+#!/bin/bash
+#
+# Shared code.
+#
+# Copyright (C) 2021  David Hobach  GPLv3
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+
+b_import "notify"
+
+#local DNS server config files & its backup
+RESOLV="/etc/resolv.conf"
+RESOLV_BAK="$RESOLV.bak"
+
+b_deps "su" "logger"
+
+#+notifyMessageHandler [message type] [message] [timeout]
+#+Requires caching with [b_cachingMessageHandler](#b_cachingMessageHandler).
+#+[b_defaultMessageHandler](#b_defaultMessageHandler) implementation which uses notify-send and the default message handler.
+#+[message type]: 0=informational message, 1=error message.
+#+[message]: String representing the message.
+#+[timeout]: Timeout in ms after which the message is meant to disappear (optional).
+#+returns: Nothing. Never causes errors.
+function notifyMessageHandler {
+local mtype="$1"
+local msg="$2"
+local timeout="$3"
+
+#also use the default message handler
+b_defaultMessageHandler "$@"
+
+#send to log & create notification
+if [ -n "$msg" ] ; then
+  if [ $mtype -eq 1 ] ; then
+    logger -t "$B_SCRIPT_NAME" -p user.error "$msg"
+
+    #NOTE: for some reason notify-send requires a full logon environment with su - to work with Qubes OS
+    #this must also be called as root from Qubes OS then
+    [ -z "$timeout" ] && timeout=60000
+    b_notify_sendNoError -u critical -t $timeout "$B_SCRIPT_NAME: ERROR $msg"
+  else
+    logger -t "$B_SCRIPT_NAME" -p user.info "$msg"
+    #[ -z "$timeout" ] && timeout=10000
+    #b_notify_sendNoError -t $timeout "$B_SCRIPT_NAME: INFO $msg"
+  fi
+fi
+
+return 0
+}
