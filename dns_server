@@ -4,8 +4,8 @@
 #
 # IMPORTANT for dev: Make sure that the Qubes firewall still works, i.e. make sure that downstream clients that should _not_ have DNS suddenly have DNS.
 #
-# Copyright (C) 2021  David Hobach  GPLv3
-# version: 0.5
+# Copyright (C) 2022  David Hobach  GPLv3
+# version: 0.6
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,6 +23,8 @@
 
 source blib
 eval "$B_SCRIPT"
+
+b_deps "touch" "mktemp" "grep" "iptables" "chown" "cp" "chmod" "diff"
 
 b_import "proc"
 
@@ -91,7 +93,7 @@ cp -f "$UNBOUND_ROOT_KEYS_SOURCE" "$UNBOUND_ROOT_KEYS_TARGET" || { B_ERR="Failed
 
 #notify the user on changes done to the DNs roots by the debian package maintainers
 notifyOnDiff "$UNBOUND_ROOT_KEYS_SOURCE" "$PACKAGE_ROOT_KEYS" "The DNSSEC root.key changed according to the package maintainers. Please investigate!"
-notifyOnDiff "$UNBOUND_ROOT_HINTS_SOURCE" "$PACKAGE_ROOT_HINTS" "The DNSSEC root.hints changed according to the package maintainers. Please investigate!"
+notifyOnDiff "$UNBOUND_ROOT_HINTS_SOURCE" "$PACKAGE_ROOT_HINTS" "The DNSSEC root.hints changed according to the package maintainers. Please investigate!" '^\s*;.*$'
 
 #create a log file that unbound can write to
 touch "$UNBOUND_LOG" || { B_ERR="Failed to create $UNBOUND_LOG" ; B_E }
@@ -115,18 +117,48 @@ trap - EXIT
 b_info "unbound was started."
 }
 
+#filterIgnored [input file] [ignore]
+#returns: path to a temporary file without the lines to ignore (`grep -E` syntax)
+#@B_E
+function filterIgnored {
+  local file="$1"
+  local ignore="$2"
+
+  local ret=
+  ret="$(mktemp)" || { B_ERR="Failed to create a temp file." ; B_E ; }
+  grep -v -E "$ignore" "$file" > "$ret"
+  [ $? -eq 2 ] && B_ERR="grep error" && B_E
+  echo "$ret"
+}
+
 #notify the user, if a diff was found between the two given files
-#notifyOnDiff [old file] [new file] [diff message]
+#notifyOnDiff [old file] [new file] [diff message] [grep ignore]
 #returns: zero exit code, if there was no diff, non-zero otherwise
 #@B_E
 function notifyOnDiff {
 local old="$1"
 local new="$2"
 local msg="$3"
+local ignore="$4"
 
-if ! diff -q "$old" "$new" > /dev/null ; then
-	notifyMessageHandler 1 "$msg"
-	return 1
+if [ -n "$ignore" ] ; then
+  old="$(filterIgnored "$old" "$ignore")"
+  new="$(filterIgnored "$new" "$ignore")"
+fi
+
+local ret=
+diff -q "$old" "$new" > /dev/null
+ret=$?
+
+#cleanup temporary files, if necessary
+if [ -n "$ignore" ] ; then
+  rm -f "$new"
+  rm -f "$old"
+fi
+
+if [ $ret -ne 0 ] ; then
+  notifyMessageHandler 1 "$msg"
+  return 1
 fi
 return 0
 }

@@ -10,7 +10,7 @@ The scripts currently require [blib](https://github.com/3hhh/blib) to be [instal
 
 ## Copyright
 
-© 2021 David Hobach
+© 2022 David Hobach
 GPLv3
 
 See `LICENSE` for details.
