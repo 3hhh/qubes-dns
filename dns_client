@@ -29,7 +29,7 @@ IPT_FILTER_CHAIN="dns_client_filter"
 IPT_NAT_CHAIN="dns_client_nat"
 
 function usage {
-echo "dns_client setup|firewall-update [DNS server IP]
+echo "$B_SCRIPT_NAME setup|firewall-update [DNS server IP]
 
 Utility script for a proxy VM (provides_network=true) to use the given DNS server instead of the default Qubes OS one.
 All VMs using that proxy VM will then use that DNS server afterwards.
