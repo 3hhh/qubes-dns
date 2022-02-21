@@ -1,0 +1,106 @@
+#!/bin/bash
+#
+# See usage()!
+#
+# Copyright (C) 2022  David Hobach  GPLv3
+# version: 0.3
+# 
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+# 
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+# 
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+#
+
+source blib
+eval "$B_SCRIPT"
+B_RC=1
+
+source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E ; }
+
+#copy of /etc/hosts as it was found on the first run of this script
+HOSTS_ORIG="/etc/hosts.orig"
+
+HOSTS="/etc/hosts"
+
+function usage {
+echo "$B_SCRIPT_NAME run|help
+
+Pin the DNS entries resolved by the qubes-firewall to /etc/hosts.
+
+run
+    Update the /etc/hosts file according to the local DNS entries resolved by the qubes-firewall.
+    An exit code of 2 indicates that no update was necessary. A zero exit code indicates a successful update. Other exit codes indicate unexpected errors.
+    Intended to be executed inside firewall VMs in combination with systemd-resolved or dnsmasq to pin/indefinitely cache those hostnames for upstream VMs. This should ensure that the Qubes OS firewall hostnames are always in sync to DNS requests from upstream VMs. Usually run from /rw/config/qubes-firewall-user-script."
+exit 1
+}
+
+function runR {
+local list=
+list="$(qubesdb-list "/dns")" || { B_ERR="Failed to execute qubesdb-list." ; B_E ; }
+
+#anything to do?
+if [ -n "$list" ] ; then
+  #create backup
+  if [ ! -f "$HOSTS_ORIG" ] ; then
+    cp "$HOSTS" "$HOSTS_ORIG" || { B_ERR="Failed to backup $HOSTS." ; B_E ; }
+  fi
+
+  #create output file
+  local ofile=
+  ofile="$(mktemp)" || { B_ERR="Failed to create a temp file." ; B_E ; }
+  cp "$HOSTS_ORIG" "$ofile" || { B_ERR="Failed to copy a file." ; B_E ; }
+  echo $'\n'$'\n'"#dns_pin2hosts generated (original hosts file at $HOSTS_ORIG)" >> "$ofile"
+
+  #generate output file
+  local item hostname ip
+  #NOTES:
+  # - we only capture the first IP as /etc/hosts doesn't support more than one anyway
+  # - currently only IPv4 is supported --> IPv6 TODO
+  local re='([0-9.]+)'
+  while IFS= read -r item ; do
+    hostname="${item##*/}"
+    ip="$(qubesdb-read "/dns${item}")" || continue #items may have been removed in the meantime
+    [[ "$ip" =~ $re ]] || { B_ERR="Unexpected IP format: $ip" ; B_E ; }
+    ip="${BASH_REMATCH[1]}"
+    echo "$ip  $hostname" >> "$ofile"
+  done <<< "$list"
+
+  if ! diff -q "$HOSTS" "$ofile" > /dev/null ; then
+    mv "$ofile" "$HOSTS"
+    echo "$HOSTS written."
+    return 0
+  else
+    rm -f "$ofile"
+  fi
+fi
+
+echo "Nothing to do."
+return 2
+}
+
+################ main ############
+
+b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
+[[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
+
+b_deps "cp" "mktemp" "diff" "mv" "rm"
+cmd="$1"
+
+case "$cmd" in
+  "run")
+    runR "$@"
+    ;;
+  *)
+    usage
+    ;;
+esac
+
+# vim: ts=2 sw=2 et
