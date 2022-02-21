@@ -24,8 +24,6 @@
 source blib
 eval "$B_SCRIPT"
 
-b_deps "touch" "mktemp" "grep" "iptables" "chown" "cp" "chmod" "diff"
-
 b_import "proc"
 
 source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E }
@@ -234,7 +232,7 @@ fi
 b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
 [[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
 
-b_deps "unbound" "chown" "chmod" "cp" "touch" "mktemp" "whoami" "iptables"
+b_deps "touch" "mktemp" "grep" "iptables" "chown" "cp" "chmod" "diff" "unbound" "whoami"
 [ $# -ne 1 ] && usage
 
 case "$1" in
