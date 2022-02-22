@@ -184,8 +184,8 @@ if iptables -N "$IPT_CHAIN" 2> /dev/null ; then
 fi
 
 iptables -F "$IPT_CHAIN"
-iptables -A "$IPT_CHAIN" -p udp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
-iptables -A "$IPT_CHAIN" -p tcp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
+iptables -A "$IPT_CHAIN" -i eth0 -p udp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
+iptables -A "$IPT_CHAIN" -i eth0 -p tcp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
 }
 
 function resetFirewall {
