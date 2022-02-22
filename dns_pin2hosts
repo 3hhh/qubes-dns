@@ -74,7 +74,8 @@ if [ -n "$list" ] ; then
   done <<< "$list"
 
   if ! diff -q "$HOSTS" "$ofile" > /dev/null ; then
-    mv "$ofile" "$HOSTS"
+    chmod 644 "$ofile" || { B_ERR="Failed to set the access rights on $ofile." ; B_E ; }
+    mv "$ofile" "$HOSTS" || { B_ERR="Failed to set $HOSTS." ; B_E ; }
     echo "$HOSTS written."
     return 0
   else
@@ -91,7 +92,7 @@ return 2
 b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
 [[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
 
-b_deps "cp" "mktemp" "diff" "mv" "rm"
+b_deps "cp" "mktemp" "diff" "mv" "rm" "chmod"
 cmd="$1"
 
 case "$cmd" in
