@@ -2,7 +2,7 @@
 
 Some helper scripts to setup a dedicated DNS VM in [Qubes OS](https://www.qubes-os.org/). All of them can be used individually.
 
-`dns_client`: Can be used to forward all DNS requests from upstream VMs to a dedicated VM or to localhost. See its help text for further details.
+`dns_client`: Can be used to forward all DNS requests from upstream VMs to a dedicated VM or to a locally running DNS server. See its help text for further details.
 
 `dns_server`: Starts an `unbound` DNS server (you still need to supply the config) and sets up the Qubes OS firewall accordingly. Intended to be used inside a dedicated DNS server VM, e.g. from `/rw/config/rc.local`.
 

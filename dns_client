@@ -52,6 +52,7 @@ logger -t "$B_SCRIPT_NAME" -p user.info "$msg"
 
 function setupR {
 local dnsServer="$1"
+[[ "$dnsServer" == "127."* ]] && B_ERR="Using loopback is not supported for security reasons (requires routing to localhost addresses). Please make your local DNS server listen on the public interfaces instead." && B_E
 
 log "setup started..."
 assertFirewallService
@@ -64,10 +65,9 @@ echo "nameserver $dnsServer" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV.
 #NOTE: currently not really needed as we do our own DNAT below
 #/usr/lib/qubes/qubes-setup-dnat-to-ns || { B_ERR="Failed to setup the Qubes OS DNAT rules. Not run inside a proxy VM?" ; B_E }
 
-#FORCE usage of the unbound DNS server regardless of what DNS server the upstream VMs are using
+#FORCE usage of the DNS server regardless of what DNS server the upstream VMs are using
 #prevents misconfigured clients
 #prevents malware or strange client implementations from playing with custom DNS servers
-#the next two lines redirect all DNS requests to the local unbound DNS server
 iptables -t nat -N "$IPT_NAT_CHAIN" || { B_ERR="Failed to create the iptables NAT chain $IPT_NAT_CHAIN. Maybe it already exists?" ; B_E }
 ( set -e
   iptables -t nat -A "$IPT_NAT_CHAIN" ! -s $dnsServer ! -d $dnsServer -p udp --dport 53 -j DNAT --to ${dnsServer}:53
