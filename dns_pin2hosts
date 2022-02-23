@@ -3,7 +3,7 @@
 # See usage()!
 #
 # Copyright (C) 2022  David Hobach  GPLv3
-# version: 0.3
+# version: 0.5
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -23,6 +23,8 @@ source blib
 eval "$B_SCRIPT"
 B_RC=1
 
+b_import args
+
 source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E ; }
 
 #copy of /etc/hosts as it was found on the first run of this script
@@ -30,15 +32,27 @@ HOSTS_ORIG="/etc/hosts.orig"
 
 HOSTS="/etc/hosts"
 
+#marks the first update to /etc/hosts
+HOSTS_UPDATE_DONE="/tmp/host_update_$$.done"
+
+#path to the dns_client binary
+DNS_CLIENT="$B_SCRIPT_DIR/dns_client"
+
 function usage {
-echo "$B_SCRIPT_NAME run|help
+echo "$B_SCRIPT_NAME run|daemon|help
 
 Pin the DNS entries resolved by the qubes-firewall to /etc/hosts.
 
 run
     Update the /etc/hosts file according to the local DNS entries resolved by the qubes-firewall.
     An exit code of 2 indicates that no update was necessary. A zero exit code indicates a successful update. Other exit codes indicate unexpected errors.
-    Intended to be executed inside firewall VMs in combination with systemd-resolved or dnsmasq to pin/indefinitely cache those hostnames for upstream VMs. This should ensure that the Qubes OS firewall hostnames are always in sync to DNS requests from upstream VMs. Usually run from /rw/config/qubes-firewall-user-script."
+
+daemon
+    Foreground daemon to continuously update the /etc/hosts file whenever the qubes-firewall is updated. Aso executes dns_client to redirect DNS requests to the local IP once the qubes-firewall resolves hostnames via DNS.
+    --first-exec [cmd]
+      Optional parameter to execute the given command [cmd] immediately after the first update of /etc/hosts. Should be used to start the local DNS server and setup the iptables INPUT chain.
+
+This script is intended to be executed inside firewall VMs in combination with systemd-resolved or dnsmasq to pin/indefinitely cache those hostnames for upstream VMs. This should ensure that the Qubes OS firewall hostnames are always in sync to DNS requests from upstream VMs. Usually run from /rw/config/qubes-firewall-user-script."
 exit 1
 }
 
@@ -87,17 +101,64 @@ echo "Nothing to do."
 return 2
 }
 
+#daemon_iter [first exec cmd] [local IP]
+function daemon_iter {
+local first_exec="$1"
+local ip="$2"
+
+if runR ; then
+  if [ -n "$first_exec" ] && [ ! -f "$HOSTS_UPDATE_DONE" ] ; then
+    #eval in subshell to avoid shell mods
+    { eval "$first_exec" ; } || { B_ERR="Failed to execute the --first-exec argument." ; B_E ; }
+  fi
+
+  if [ -f "$HOSTS_UPDATE_DONE" ] ; then
+    "$DNS_CLIENT" firewall-update "$ip" || { B_ERR="Failed to execute dns_client firewall-update." ; B_E ; }
+  else
+    "$DNS_CLIENT" setup "$ip" || { B_ERR="Failed to execute the dns_client setup." ; B_E ; }
+    touch "$HOSTS_UPDATE_DONE"
+  fi
+fi
+}
+
+function daemonR {
+rm -f "$HOSTS_UPDATE_DONE" &> /dev/null
+
+b_args_init 1 "--exec-first" 1
+b_args_parse "$@"
+local first_exec="$(b_args_getOption "--exec-first")"
+
+local ip=
+ip="$(ip -4 addr show eth0)" || { B_ERR="Failed to execute ip addr." ; B_E ; }
+local re='inet ([0-9.]+)/32'
+[[ "$ip" =~ $re ]] && ip="${BASH_REMATCH[1]}" || { B_ERR="Failed to parse the ip addr output." ; B_E ; }
+
+#execute once in case we were started late
+daemon_iter "$first_exec" "$ip"
+
+#start monitoring
+stdbuf -o0 -e0 qubesdb-watch -n-1 "/dns/" | {
+  local line=
+  while IFS= read -r line ; do
+    daemon_iter "$first_exec" "$ip"
+  done
+  }
+}
+
 ################ main ############
 
 b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
 [[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
 
-b_deps "cp" "mktemp" "diff" "mv" "rm" "chmod"
+b_deps "cp" "mktemp" "diff" "mv" "rm" "chmod" "stdbuf" "qubesdb-watch"
 cmd="$1"
 
 case "$cmd" in
   "run")
     runR "$@"
+    ;;
+  "daemon")
+    daemonR "$@"
     ;;
   *)
     usage

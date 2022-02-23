@@ -12,39 +12,16 @@
 
 #see the systemd-resolved resolved.conf for further details
 
-DNS_SETUP_DONE="/tmp/systemd-resolved_setup.done"
-LOCAL_IP="$(ip -4 addr show eth0)"
-re='inet ([0-9.]+)/32'
-[[ "$LOCAL_IP" =~ $re ]] && LOCAL_IP="${BASH_REMATCH[1]}" || exit 2
+exec_first='
+set -e -o pipefail
+#allow local DNS server on firewall
+#NOTE: vif+ should be the upstream interfaces
+iptables -I INPUT -i vif+ -p udp --dport 53 -j ACCEPT
+iptables -I INPUT -i vif+ -p tcp --dport 53 -j ACCEPT
 
-function update {
-if dns_pin2hosts run ; then
-  if [ ! -f "$DNS_SETUP_DONE" ] ; then
-    #allow local DNS server on firewall
-    #NOTE: vif+ should be the upstream interfaces
-    iptables -I INPUT -i vif+ -p udp --dport 53 -j ACCEPT
-    iptables -I INPUT -i vif+ -p tcp --dport 53 -j ACCEPT
-  fi
+#start the DNS server
+#NOTE: systemd-resolved monitors /etc/hosts for changes
+systemctl start systemd-resolved'
 
-  systemctl restart systemd-resolved #this also starts it if it wasn't started before
-
-  if [ -f "$DNS_SETUP_DONE" ] ; then
-    dns_client firewall-update "$LOCAL_IP"
-  else
-    dns_client setup "$LOCAL_IP"
-    touch "$DNS_SETUP_DONE"
-  fi
-fi
-}
-
-function watcherDaemon {
-  update
-
-  while : ; do
-    qubesdb-watch "/dns/"
-    update
-  done
-}
-
-watcherDaemon &
+dns_pin2hosts "daemon" --exec-first "$exec_first" &
 disown
