@@ -26,7 +26,7 @@ eval "$B_SCRIPT"
 
 b_import "proc"
 
-source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E }
+source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E ; }
 
 #name of the unbound user
 #(nowadays not really needed anymore as we don't run inside chroot, but unbound appears to fail otherwise anyway)
@@ -85,18 +85,18 @@ trap stopR EXIT
 
 #copy the DNS root info & root key for DNSSEC
 local dir="${UNBOUND_ROOT_HINTS_TARGET%/*}"
-chown -R "$UNBOUND_USER:$UNBOUND_USER" "$dir" || { B_ERR="Failed to set the ownership for $dir." ; B_E }
-cp -f "$UNBOUND_ROOT_HINTS_SOURCE" "$UNBOUND_ROOT_HINTS_TARGET" || { B_ERR="Failed to copy $UNBOUND_ROOT_HINTS_SOURCE." ; B_E }
-cp -f "$UNBOUND_ROOT_KEYS_SOURCE" "$UNBOUND_ROOT_KEYS_TARGET" || { B_ERR="Failed to copy $UNBOUND_ROOT_KEYS_SOURCE." ; B_E }
+chown -R "$UNBOUND_USER:$UNBOUND_USER" "$dir" || { B_ERR="Failed to set the ownership for $dir." ; B_E ; }
+cp -f "$UNBOUND_ROOT_HINTS_SOURCE" "$UNBOUND_ROOT_HINTS_TARGET" || { B_ERR="Failed to copy $UNBOUND_ROOT_HINTS_SOURCE." ; B_E ; }
+cp -f "$UNBOUND_ROOT_KEYS_SOURCE" "$UNBOUND_ROOT_KEYS_TARGET" || { B_ERR="Failed to copy $UNBOUND_ROOT_KEYS_SOURCE." ; B_E ; }
 
 #notify the user on changes done to the DNs roots by the debian package maintainers
 notifyOnDiff "$UNBOUND_ROOT_KEYS_SOURCE" "$PACKAGE_ROOT_KEYS" "The DNSSEC root.key changed according to the package maintainers. Please investigate!"
 notifyOnDiff "$UNBOUND_ROOT_HINTS_SOURCE" "$PACKAGE_ROOT_HINTS" "The DNSSEC root.hints changed according to the package maintainers. Please investigate!" '^\s*;.*$'
 
 #create a log file that unbound can write to
-touch "$UNBOUND_LOG" || { B_ERR="Failed to create $UNBOUND_LOG" ; B_E }
-chown "$UNBOUND_USER:$UNBOUND_USER" "$UNBOUND_LOG" || { B_ERR="Failed to pass ownership of the $UNBOUND_LOG." ; B_E }
-chmod 664 "$UNBOUND_LOG" || { B_ERR="Failed to chmod $UNBOUND_LOG." ; B_E }
+touch "$UNBOUND_LOG" || { B_ERR="Failed to create $UNBOUND_LOG" ; B_E ; }
+chown "$UNBOUND_USER:$UNBOUND_USER" "$UNBOUND_LOG" || { B_ERR="Failed to pass ownership of the $UNBOUND_LOG." ; B_E ; }
+chmod 664 "$UNBOUND_LOG" || { B_ERR="Failed to chmod $UNBOUND_LOG." ; B_E ; }
 
 #wait for the wait file to disappear
 while [ -f "$WAIT_FILE" ] ; do
@@ -105,7 +105,7 @@ while [ -f "$WAIT_FILE" ] ; do
 done
 
 #start unbound
-unbound -c "$UNBOUND_CONF" || { B_ERR="Failed to start unbound. You might need to fix your config file?!" ; B_E }
+unbound -c "$UNBOUND_CONF" || { B_ERR="Failed to start unbound. You might need to fix your config file?!" ; B_E ; }
 setLocalDNSServer
 allowDNSOnFirewall
 
@@ -163,14 +163,14 @@ return 0
 
 function setLocalDNSServer {
 if [ ! -e "$RESOLV_BAK" ] ; then
-  cp -f "$RESOLV" "$RESOLV_BAK" || { B_ERR="Failed to restore $RESOLV_BAK --> $RESOLV" ; B_E }
+  cp -f "$RESOLV" "$RESOLV_BAK" || { B_ERR="Failed to restore $RESOLV_BAK --> $RESOLV" ; B_E ; }
 fi
-echo "127.0.0.1" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV" ; B_E }
+echo "127.0.0.1" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV" ; B_E ; }
 }
 
 function restoreLocalDNSServer {
 if [ -f "$RESOLV_BAK" ] ; then
-  cp -f "$RESOLV_BAK" "$RESOLV" || { B_ERR="Failed to restore $RESOLV_BAK --> $RESOLV" ; B_E }
+  cp -f "$RESOLV_BAK" "$RESOLV" || { B_ERR="Failed to restore $RESOLV_BAK --> $RESOLV" ; B_E ; }
 fi
 return 0
 }
@@ -180,12 +180,12 @@ function allowDNSOnFirewall {
 #put all unbound-specific rules to a dedicated chain
 #we only re-create it, if it's not already there
 if iptables -N "$IPT_CHAIN" 2> /dev/null ; then
-  iptables -I INPUT -j "$IPT_CHAIN" || { B_ERR="iptables issue." ; B_E }
+  iptables -I INPUT -j "$IPT_CHAIN" || { B_ERR="iptables issue." ; B_E ; }
 fi
 
 iptables -F "$IPT_CHAIN"
-iptables -A "$IPT_CHAIN" -i eth0 -p udp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
-iptables -A "$IPT_CHAIN" -i eth0 -p tcp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E }
+iptables -A "$IPT_CHAIN" -i eth0 -p udp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E ; }
+iptables -A "$IPT_CHAIN" -i eth0 -p tcp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E ; }
 }
 
 function resetFirewall {
@@ -207,11 +207,11 @@ echo "$ret"
 #stops the unbound daemon, if unbound is used
 function stopR {
 local pid=
-pid="$(getPid)" || { B_ERR="unbound appears to be stopped." ; B_E }
+pid="$(getPid)" || { B_ERR="unbound appears to be stopped." ; B_E ; }
 b_info "Stopping unbound..."
 resetFirewall
 restoreLocalDNSServer
-kill "$pid" || { B_ERR="Failed to terminate unbound (pid: $pid)." ; B_E }
+kill "$pid" || { B_ERR="Failed to terminate unbound (pid: $pid)." ; B_E ; }
 b_info "unbound was stopped."
 }
 

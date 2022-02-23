@@ -22,7 +22,7 @@
 source blib
 eval "$B_SCRIPT"
 
-source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E }
+source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E ; }
 
 #name of the iptables chain created by this script
 IPT_FILTER_CHAIN="dns_client_filter"
@@ -42,7 +42,7 @@ exit 1
 
 function assertFirewallService {
 #cf. https://github.com/QubesOS/qubes-issues/issues/3269 why it's good to check the firewall service is up
-systemctl status qubes-firewall > /dev/null || { B_ERR="The qubes-firewall service appears to be down! This is certainly an issue. Please investigate!" ; B_E }
+systemctl status qubes-firewall > /dev/null || { B_ERR="The qubes-firewall service appears to be down! This is certainly an issue. Please investigate!" ; B_E ; }
 }
 
 function log {
@@ -58,31 +58,31 @@ log "setup started..."
 assertFirewallService
 
 #update /etc/resolv.conf
-cp -f "$RESOLV" "$RESOLV.bak" || { B_ERR="Failed to copy $RESOLV." ; B_E }
-echo "nameserver $dnsServer" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV." ; B_E }
+cp -f "$RESOLV" "$RESOLV.bak" || { B_ERR="Failed to copy $RESOLV." ; B_E ; }
+echo "nameserver $dnsServer" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV." ; B_E ; }
 
 #make sure the DNS server changes are reflected by the Qubes DNAT rules
 #NOTE: currently not really needed as we do our own DNAT below
-#/usr/lib/qubes/qubes-setup-dnat-to-ns || { B_ERR="Failed to setup the Qubes OS DNAT rules. Not run inside a proxy VM?" ; B_E }
+#/usr/lib/qubes/qubes-setup-dnat-to-ns || { B_ERR="Failed to setup the Qubes OS DNAT rules. Not run inside a proxy VM?" ; B_E ; }
 
 #FORCE usage of the DNS server regardless of what DNS server the upstream VMs are using
 #prevents misconfigured clients
 #prevents malware or strange client implementations from playing with custom DNS servers
-iptables -t nat -N "$IPT_NAT_CHAIN" || { B_ERR="Failed to create the iptables NAT chain $IPT_NAT_CHAIN. Maybe it already exists?" ; B_E }
+iptables -t nat -N "$IPT_NAT_CHAIN" || { B_ERR="Failed to create the iptables NAT chain $IPT_NAT_CHAIN. Maybe it already exists?" ; B_E ; }
 ( set -e
-  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s $dnsServer ! -d $dnsServer -p udp --dport 53 -j DNAT --to ${dnsServer}:53
-  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s $dnsServer ! -d $dnsServer -p tcp --dport 53 -j DNAT --to ${dnsServer}:53
+  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s "$dnsServer" ! -d "$dnsServer" -p udp --dport 53 -j DNAT --to "${dnsServer}:53"
+  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s "$dnsServer" ! -d "$dnsServer" -p tcp --dport 53 -j DNAT --to "${dnsServer}:53"
   iptables -t nat -I PREROUTING -j "$IPT_NAT_CHAIN"
 )
 [ $? -ne 0 ] && B_ERR="Failed to setup some of the iptables DNAT rules. Please investigate!" && B_E
 
 #allow traffic to the DNS server from other VMs and the other way around
-iptables -N "$IPT_FILTER_CHAIN" || { B_ERR="Failed to create the iptables FILTER chain $IPT_FILTER_CHAIN. Maybe it already exists?" ; B_E }
+iptables -N "$IPT_FILTER_CHAIN" || { B_ERR="Failed to create the iptables FILTER chain $IPT_FILTER_CHAIN. Maybe it already exists?" ; B_E ; }
 ( set -e
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d $dnsServer/32 -p tcp --dport 53 -j ACCEPT
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d $dnsServer/32 -p udp --dport 53 -j ACCEPT
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s $dnsServer/32 -p tcp --sport 53 -j ACCEPT
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s $dnsServer/32 -p tcp --sport 53 -j ACCEPT
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d "$dnsServer/32" -p tcp --dport 53 -j ACCEPT
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d "$dnsServer/32" -p udp --dport 53 -j ACCEPT
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s "$dnsServer/32" -p tcp --sport 53 -j ACCEPT
+  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s "$dnsServer/32" -p tcp --sport 53 -j ACCEPT
 )
 [ $? -ne 0 ] && B_ERR="Failed to setup some of the iptables FILTER rules. Please investigate!" && B_E
 
@@ -95,7 +95,7 @@ iptables -N "$IPT_FILTER_CHAIN" || { B_ERR="Failed to create the iptables FILTER
 # [...]
 #NOTE: this is fully compatible to the VPN installForwardDropDefaultRule() - the order in which any of them is executed doesn't matter (only both changes at the same time wouldn't be good, but the DNS VM is meant to be started only after the VPN is up anyway)
 local ipt rule rules
-ipt="$(iptables-save)" || { B_ERR="Failed to get the iptables rules." ; B_E }
+ipt="$(iptables-save)" || { B_ERR="Failed to get the iptables rules." ; B_E ; }
 rules=""
 local found=1
 while IFS= read -r rule ; do
@@ -105,8 +105,8 @@ while IFS= read -r rule ; do
   fi
   rules="$rules"$'\n'"$rule"
 done <<< "$ipt"
-[ $found -eq 0 ] || { B_ERR="Didn't find the location to add the custom iptables rule. Programming mistake?! Please investigate!" ; B_E }
-iptables-restore <<< "$rules" || { B_ERR="Failed to set the iptables rules." ; B_E }
+[ $found -eq 0 ] || { B_ERR="Didn't find the location to add the custom iptables rule. Programming mistake?! Please investigate!" ; B_E ; }
+iptables-restore <<< "$rules" || { B_ERR="Failed to set the iptables rules." ; B_E ; }
 
 log "setup done"
 return 0
@@ -121,14 +121,14 @@ log "firewall-update started..."
 #NOTE:
 #we may be called during setup() --> we silently quit our checks then
 local uptime=
-uptime="$(grep -E -o '^[0-9]+' /proc/uptime)" || { B_ERR="Failed to identify the uptime!" ; B_E }
+uptime="$(grep -E -o '^[0-9]+' /proc/uptime)" || { B_ERR="Failed to identify the uptime!" ; B_E ; }
 [ $uptime -le 30 ] && log "firewall-update right during/after boot. Skipping..." && return 0
 
 assertFirewallService
 
 #make sure /etc/resolv.conf still contains our server
 local out="$(< $RESOLV)"
-[[ "$out" == "nameserver $dnsServer" ]] || { B_ERR="$RESOLV changed on Qubes OS firewall update. This is unexpected. Please investigate!" ; B_E }
+[[ "$out" == "nameserver $dnsServer" ]] || { B_ERR="$RESOLV changed on Qubes OS firewall update. This is unexpected. Please investigate!" ; B_E ; }
 
 #make sure our custom iptables chains still exists
 iptables -N "$IPT_FILTER_CHAIN" &> /dev/null && B_ERR="$IPT_FILTER_CHAIN had to be recreated on Qubes OS firewall update. That is unexpected.. Please investigate!" && B_E
