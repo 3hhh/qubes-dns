@@ -144,7 +144,7 @@ rules="$(nft list ruleset)" || { B_ERR="Failed to read the nft ruleset." ; B_E ;
 
 #make sure our custom chains still exist
 [[ "$rules" == *" jump $FW_FILTER_CHAIN"* ]] || { B_ERR="Failed to find the $FW_FILTER_CHAIN chain. Please ivestigate!" ; B_E ; }
-[[ "$rules" == *" jump $FW_NAT_CHAIN"* ]] || { B_ERR="Failed to find the $FW_NAT_CHAIN chain. Please ivestigate!" ; B_E ; }
+[[ "$rules" == *"chain $FW_NAT_CHAIN "* ]] || { B_ERR="Failed to find the $FW_NAT_CHAIN chain. Please ivestigate!" ; B_E ; }
 
 #check whether our DNS server exists in the rules
 [[ "$rules" == *" $dnsServer udp dport 53 "* ]] || { B_ERR="Failed to find the DNS server $dnsServer in the firewall rules. Please ivestigate!" ; B_E ; }
