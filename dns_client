@@ -2,8 +2,8 @@
 #
 # See usage()!
 #
-# Copyright (C) 2021  David Hobach  GPLv3
-# version: 0.6
+# Copyright (C) 2023  David Hobach  GPLv3
+# version: 0.7
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -24,12 +24,13 @@ eval "$B_SCRIPT"
 
 source "$B_SCRIPT_DIR/dnsCommon" || { B_ERR="Failed to source the common code." ; B_E ; }
 
-#name of the iptables chain created by this script
-IPT_FILTER_CHAIN="dns_client_filter"
-IPT_NAT_CHAIN="dns_client_nat"
+#name of the nft chains created by this script
+FW_FILTER_CHAIN="dns_client_filter"
+FW_NAT_CHAIN="dns_client_nat"
 
+#maybe TODO: add some clean call to flush the created firewall rules
 function usage {
-echo "$B_SCRIPT_NAME setup|firewall-update [DNS server IP]
+echo "$B_SCRIPT_NAME setup [DNS server IP]|firewall-update [DNS server IP]|reset
 
 Utility script for a proxy VM (provides_network=true) to use the given DNS server instead of the default Qubes OS one.
 All VMs using that proxy VM will then use that DNS server afterwards.
@@ -68,51 +69,61 @@ echo "nameserver $dnsServer" > "$RESOLV" || { B_ERR="Failed to write to $RESOLV.
 #FORCE usage of the DNS server regardless of what DNS server the upstream VMs are using
 #prevents misconfigured clients
 #prevents malware or strange client implementations from playing with custom DNS servers
-iptables -t nat -N "$IPT_NAT_CHAIN" || { B_ERR="Failed to create the iptables NAT chain $IPT_NAT_CHAIN. Maybe it already exists?" ; B_E ; }
+#
+#NOTES @nft tricks:
+# - we use a hook priority lower than the Qubes nat chain to be called _before_ that one; this technique should work for both Qubes 4.1 and 4.2 firewalls (https://github.com/QubesOS/qubes-core-agent-linux/pull/407)
+#   - https://wiki.nftables.org/wiki-nftables/index.php/Netfilter_hooks
+#   - accepts will pass it on to the next hook/callback, denies will be final --> the technique only works, if the Qubes default policy is accept
+# - https://wiki.nftables.org/wiki-nftables/index.php/Configuring_chains
+# - for convenience we also create our own table (nft tables have no practical relevance - only the hook order/priority matters)
 ( set -e
-  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s "$dnsServer" ! -d "$dnsServer" -p udp --dport 53 -j DNAT --to "${dnsServer}:53"
-  iptables -t nat -A "$IPT_NAT_CHAIN" ! -s "$dnsServer" ! -d "$dnsServer" -p tcp --dport 53 -j DNAT --to "${dnsServer}:53"
-  iptables -t nat -I PREROUTING -j "$IPT_NAT_CHAIN"
+  nft add table ip "$FW_NAT_CHAIN"
+  nft add chain ip "$FW_NAT_CHAIN" "$FW_NAT_CHAIN" '{ type nat hook prerouting priority dstnat -1 ; }'
+  nft add rule ip "$FW_NAT_CHAIN" "$FW_NAT_CHAIN" "ip saddr != $dnsServer ip daddr != $dnsServer udp dport 53 counter dnat to ${dnsServer}:53"
+  nft add rule ip "$FW_NAT_CHAIN" "$FW_NAT_CHAIN" "ip saddr != $dnsServer ip daddr != $dnsServer tcp dport 53 counter dnat to ${dnsServer}:53"
 )
-[ $? -ne 0 ] && B_ERR="Failed to setup some of the iptables DNAT rules. Please investigate!" && B_E
+[ $? -ne 0 ] && B_ERR="Failed to setup some of the firewall DNAT rules. Please investigate!" && B_E
+
+#identify table & chain for filtering
+local rules tchain ttable
+rules="$(nft list ruleset)" || { B_ERR="Failed to read the nft ruleset." ; B_E ; }
+
+#identify the forward table & chain
+if [[ "$rules" == *"chain custom-input "* ]] ; then # >= Qubes 4.2
+  ttable="qubes"
+  tchain="custom-forward"
+elif [[ "$rules" == *"chain INPUT "* ]] ; then # <= Qubes 4.1
+  ttable="filter"
+  tchain="FORWARD"
+else
+  B_ERR="Failed to identify a matching target nft table & chain."
+  B_E
+fi
 
 #allow traffic to the DNS server from other VMs and the other way around
-iptables -N "$IPT_FILTER_CHAIN" || { B_ERR="Failed to create the iptables FILTER chain $IPT_FILTER_CHAIN. Maybe it already exists?" ; B_E ; }
 ( set -e
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d "$dnsServer/32" -p tcp --dport 53 -j ACCEPT
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -d "$dnsServer/32" -p udp --dport 53 -j ACCEPT
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s "$dnsServer/32" -p tcp --sport 53 -j ACCEPT
-  iptables -A "$IPT_FILTER_CHAIN" -i vif+ -o vif+ -s "$dnsServer/32" -p tcp --sport 53 -j ACCEPT
+  nft add chain ip "$ttable" "$FW_FILTER_CHAIN"
+  nft add rule ip "$ttable" "$FW_FILTER_CHAIN" iifname "vif*" oifname "vif*" ip daddr "$dnsServer" tcp dport 53 counter accept
+  nft add rule ip "$ttable" "$FW_FILTER_CHAIN" iifname "vif*" oifname "vif*" ip daddr "$dnsServer" udp dport 53 counter accept
+  nft add rule ip "$ttable" "$FW_FILTER_CHAIN" iifname "vif*" oifname "vif*" ip daddr "$dnsServer" tcp sport 53 counter accept
+  nft add rule ip "$ttable" "$FW_FILTER_CHAIN" iifname "vif*" oifname "vif*" ip daddr "$dnsServer" udp sport 53 counter accept
+  nft insert rule ip "$ttable" "$tchain" counter jump "$FW_FILTER_CHAIN"
 )
-[ $? -ne 0 ] && B_ERR="Failed to setup some of the iptables FILTER rules. Please investigate!" && B_E
-
-#add $IPT_FILTER_CHAIN to the FORWARD chain
-#the FORWARD chain is expected to look like
-# [...]
-# -A FORWARD -j QBS-FORWARD
-# [ADD HERE] 
-# -A FORWARD -i vif+ -o vif+ -j DROP
-# [...]
-#NOTE: this is fully compatible to the VPN installForwardDropDefaultRule() - the order in which any of them is executed doesn't matter (only both changes at the same time wouldn't be good, but the DNS VM is meant to be started only after the VPN is up anyway)
-local ipt rule rules
-ipt="$(iptables-save)" || { B_ERR="Failed to get the iptables rules." ; B_E ; }
-rules=""
-local found=1
-while IFS= read -r rule ; do
-  if [[ "$rule" == "-A FORWARD -i vif+ -o vif+ -j DROP" ]] ; then
-    rule="-A FORWARD -j $IPT_FILTER_CHAIN"$'\n'"$rule"
-    found=0
-  fi
-  rules="$rules"$'\n'"$rule"
-done <<< "$ipt"
-[ $found -eq 0 ] || { B_ERR="Didn't find the location to add the custom iptables rule. Programming mistake?! Please investigate!" ; B_E ; }
-iptables-restore <<< "$rules" || { B_ERR="Failed to set the iptables rules." ; B_E ; }
+[ $? -ne 0 ] && B_ERR="Failed to setup some of the firewall forward filtering rules. Please investigate!" && B_E
 
 log "setup done"
 return 0
 }
 
+function reset {
+nft flush table ip "$FW_NAT_CHAIN"
+nft flush chain ip filter "$FW_FILTER_CHAIN" &> /dev/null # <= Qubes 4.1
+nft flush chain ip qubes "$FW_FILTER_CHAIN" &> /dev/null # >= Qubes 4.2
+#our jumps to the then empty chains may stay - they don't hurt
+}
+
 function firewallUpdateR {
+local uptime rules
 local dnsServer="$1"
 #NOTE: Actually we don't need to do anything here, but we only _check_ whether everything is still setup correctly (in case Qubes OS suddenly does things differently than ever before).
 
@@ -120,7 +131,6 @@ log "firewall-update started..."
 
 #NOTE:
 #we may be called during setup() --> we silently quit our checks then
-local uptime=
 uptime="$(grep -E -o '^[0-9]+' /proc/uptime)" || { B_ERR="Failed to identify the uptime!" ; B_E ; }
 [ $uptime -le 30 ] && log "firewall-update right during/after boot. Skipping..." && return 0
 
@@ -130,21 +140,14 @@ assertFirewallService
 local out="$(< $RESOLV)"
 [[ "$out" == "nameserver $dnsServer" ]] || { B_ERR="$RESOLV changed on Qubes OS firewall update. This is unexpected. Please investigate!" ; B_E ; }
 
-#make sure our custom iptables chains still exists
-iptables -N "$IPT_FILTER_CHAIN" &> /dev/null && B_ERR="$IPT_FILTER_CHAIN had to be recreated on Qubes OS firewall update. That is unexpected.. Please investigate!" && B_E
-iptables -t nat -N "$IPT_NAT_CHAIN" &> /dev/null && B_ERR="$IPT_NAT_CHAIN had to be recreated on Qubes OS firewall update. That is unexpected.. Please investigate!" && B_E
+rules="$(nft list ruleset)" || { B_ERR="Failed to read the nft ruleset." ; B_E ; }
 
-#make sure the jump to our custom chain is there
-iptables-save | grep -- "-A FORWARD -j $IPT_FILTER_CHAIN" > /dev/null
-[ $? -ne 0 ] && B_ERR="Failed to find the jump to the $IPT_FILTER_CHAIN on Qubes OS firewall update. Please investigate!" && B_E
+#make sure our custom chains still exist
+[[ "$rules" == *" jump $FW_FILTER_CHAIN"* ]] || { B_ERR="Failed to find the $FW_FILTER_CHAIN chain. Please ivestigate!" ; B_E ; }
+[[ "$rules" == *" jump $FW_NAT_CHAIN"* ]] || { B_ERR="Failed to find the $FW_NAT_CHAIN chain. Please ivestigate!" ; B_E ; }
 
-#check DNS DNAT is in place
-iptables -t nat -L -vn | grep "to:$dnsServer" > /dev/null
-[ $? -ne 0 ] && B_ERR="Failed to find the DNS DNAT on Qubes OS firewall update. Please investigate!" && B_E
-
-#make sure our forced DNS server DNAT is first in the DNAT chain (the Qubes OS DNAT doesn't enforce the DNS servers)
-iptables -t nat -L -vn | head -n3 | grep "$IPT_NAT_CHAIN" > /dev/null
-[ $? -ne 0 ] && B_ERR="Failed to find the forced DNS DNAT on Qubes OS firewall update. Please investigate!" && B_E
+#check whether our DNS server exists in the rules
+[[ "$rules" == *" $dnsServer udp dport 53 "* ]] || { B_ERR="Failed to find the DNS server $dnsServer in the firewall rules. Please ivestigate!" ; B_E ; }
 
 log "firewall-update done"
 return 0
@@ -153,9 +156,9 @@ return 0
 ################ main ############
 
 b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
-[[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
+[[ $EUID -ne 0 ]] && B_ERR="This script must be run as root." && B_E
 
-b_deps "iptables" "iptables-save" "iptables-restore" "whoami" "grep"
+b_deps "nft" "grep"
 [ $# -lt 1 ] && usage
 #special case: a single parameter may happen, if salt didn't have the correct IP (usually on first run, if sys-dns wasn't created yet)
 [ $# -ne 2 ] && B_ERR="Invalid number of parameters passed. Maybe no sys-dns IP configured @salt? Aborting..." && B_E
@@ -168,6 +171,9 @@ case "$cmd" in
     ;;
   "firewall-update")
     firewallUpdateR "$@"
+    ;;
+  "reset")
+    reset "$@"
     ;;
   *)
     usage

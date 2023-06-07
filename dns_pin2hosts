@@ -2,8 +2,8 @@
 #
 # See usage()!
 #
-# Copyright (C) 2022  David Hobach  GPLv3
-# version: 0.5
+# Copyright (C) 2023  David Hobach  GPLv3
+# version: 0.6
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -50,7 +50,7 @@ run
 daemon
     Foreground daemon to continuously update the /etc/hosts file whenever the qubes-firewall is updated. Aso executes dns_client to redirect DNS requests to the local IP once the qubes-firewall resolves hostnames via DNS.
     --first-exec [cmd]
-      Optional parameter to execute the given command [cmd] immediately after the first update of /etc/hosts. Should be used to start the local DNS server and setup the iptables INPUT chain.
+      Optional parameter to execute the given command [cmd] immediately after the first update of /etc/hosts. Should be used to start the local DNS server and setup the local firewall.
 
 This script is intended to be executed inside firewall VMs in combination with systemd-resolved or dnsmasq to pin/indefinitely cache those hostnames for upstream VMs. This should ensure that the Qubes OS firewall hostnames are always in sync to DNS requests from upstream VMs. Usually run from /rw/config/qubes-firewall-user-script."
 exit 1
@@ -148,7 +148,7 @@ stdbuf -o0 -e0 qubesdb-watch -n-1 "/dns/" | {
 ################ main ############
 
 b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
-[[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
+[[ $EUID -ne 0 ]] && B_ERR="This script must be run as root." && B_E
 
 b_deps "cp" "mktemp" "diff" "mv" "rm" "chmod" "stdbuf" "qubesdb-watch"
 cmd="$1"

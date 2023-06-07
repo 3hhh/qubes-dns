@@ -4,8 +4,8 @@
 #
 # IMPORTANT for dev: Make sure that the Qubes firewall still works, i.e. make sure that downstream clients that should _not_ have DNS suddenly have DNS.
 #
-# Copyright (C) 2022  David Hobach  GPLv3
-# version: 0.6
+# Copyright (C) 2023  David Hobach  GPLv3
+# version: 0.7
 # 
 # This program is free software: you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -59,8 +59,8 @@ PACKAGE_ROOT_HINTS="/usr/share/dns/root.hints"
 #if this file exists, start will wait forever for its removal before doing the actual start (useful to control this script from external scripts)
 WAIT_FILE="/tmp/unbound.wait"
 
-#name of the iptables chain created by this script
-IPT_CHAIN="dns_server"
+#name of the nft chain created by this script
+FW_CHAIN="dns_server"
 
 function usage {
 echo "$B_SCRIPT_NAME start|stop|restart|status
@@ -175,21 +175,39 @@ fi
 return 0
 }
 
-
 function allowDNSOnFirewall {
-#put all unbound-specific rules to a dedicated chain
-#we only re-create it, if it's not already there
-if iptables -N "$IPT_CHAIN" 2> /dev/null ; then
-  iptables -I INPUT -j "$IPT_CHAIN" || { B_ERR="iptables issue." ; B_E ; }
+local rules tchain ttable
+rules="$(nft list ruleset)" || { B_ERR="Failed to read the nft ruleset." ; B_E ; }
+
+if [[ "$rules" == *"chain custom-input "* ]] ; then # >= Qubes 4.2
+  ttable="qubes"
+  tchain="custom-input"
+elif [[ "$rules" == *"chain INPUT "* ]] ; then # <= Qubes 4.1
+  ttable="filter"
+  tchain="INPUT"
+else
+  B_ERR="Failed to identify a matching target nft table & chain."
+  B_E
 fi
 
-iptables -F "$IPT_CHAIN"
-iptables -A "$IPT_CHAIN" -i eth0 -p udp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E ; }
-iptables -A "$IPT_CHAIN" -i eth0 -p tcp --dport 53 -j ACCEPT || { B_ERR="iptables issue." ; B_E ; }
+#put all unbound-specific rules to a dedicated chain
+(
+set -e
+nft add chain ip "$ttable" "$FW_CHAIN"
+nft flush chain ip "$ttable" "$FW_CHAIN"
+nft add rule ip "$ttable" "$FW_CHAIN" iifname "eth0" udp dport 53 counter accept
+nft add rule ip "$ttable" "$FW_CHAIN" iifname "eth0" tcp dport 53 counter accept
+) || { B_ERR="Failed to execute some nft rules." ; B_E ; }
+
+#we only re-create it, if it's not already there
+if [[ "$rules" != *"jump $FW_CHAIN"* ]] ; then
+  nft insert rule ip "$ttable" "$tchain" counter jump "$FW_CHAIN" || { B_ERR="Failed to reference the nft $FW_CHAIN chain." ; B_E ; }
+fi
 }
 
 function resetFirewall {
-iptables -F "$IPT_CHAIN"
+nft flush chain ip filter "$FW_CHAIN" &> /dev/null # <= Qubes 4.1
+nft flush chain ip qubes "$FW_CHAIN" &> /dev/null # >= Qubes 4.2
 }
 
 #getPid
@@ -230,9 +248,9 @@ fi
 ################ main ############
 
 b_initCachingMessageHandler && b_setMessageHandler "b_cachingMessageHandler notifyMessageHandler"
-[[ "$(whoami)" != "root" ]] && B_ERR="This script must be run as root." && B_E
+[[ $EUID -ne 0 ]] && B_ERR="This script must be run as root." && B_E
 
-b_deps "touch" "mktemp" "grep" "iptables" "chown" "cp" "chmod" "diff" "unbound" "whoami"
+b_deps "touch" "mktemp" "grep" "nft" "chown" "cp" "chmod" "diff" "unbound"
 [ $# -ne 1 ] && usage
 
 case "$1" in

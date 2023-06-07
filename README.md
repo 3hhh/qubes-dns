@@ -14,7 +14,7 @@ The scripts currently require [blib](https://github.com/3hhh/blib) to be [instal
 
 ## Copyright
 
-© 2022 David Hobach
+© 2023 David Hobach
 GPLv3
 
 See `LICENSE` for details.

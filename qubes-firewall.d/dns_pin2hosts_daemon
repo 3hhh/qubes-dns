@@ -16,8 +16,18 @@ exec_first='
 set -e -o pipefail
 #allow local DNS server on firewall
 #NOTE: vif+ should be the upstream interfaces
-iptables -I INPUT -i vif+ -p udp --dport 53 -j ACCEPT
-iptables -I INPUT -i vif+ -p tcp --dport 53 -j ACCEPT
+rules="$(nft list ruleset)"
+  if [[ "$rules" == *"chain custom-input "* ]] ; then # >= Qubes 4.2
+    ttable="qubes"
+    tchain="custom-input"
+  elif [[ "$rules" == *"chain INPUT "* ]] ; then # <= Qubes 4.1
+    ttable="filter"
+    tchain="INPUT"
+  else
+    exit 1
+  fi
+nft insert rule ip "$ttable" "$tchain" iifname "vif*" udp dport 53 counter accept
+nft insert rule ip "$ttable" "$tchain" iifname "vif*" tcp dport 53 counter accept
 
 #start the DNS server
 #NOTE: systemd-resolved monitors /etc/hosts for changes
