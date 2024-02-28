@@ -33,5 +33,5 @@ nft insert rule ip "$ttable" "$tchain" iifname "vif*" tcp dport 53 counter accep
 #NOTE: systemd-resolved monitors /etc/hosts for changes
 systemctl start systemd-resolved'
 
-dns_pin2hosts "daemon" --exec-first "$exec_first" &
+{ dns_pin2hosts "daemon" --exec-first "$exec_first" |& logger -t "dns_pin2hosts" ; } &
 disown
