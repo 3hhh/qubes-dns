@@ -20,6 +20,7 @@
 #
 
 source blib
+b_checkVersion 1 6 || { >&2 echo "This script depends on blib (https://github.com/3hhh/blib) version 1.6 or higher. Please install a supported version." ; exit 1 ; }
 eval "$B_SCRIPT"
 B_RC=1
 
@@ -79,7 +80,7 @@ if [ -n "$list" ] ; then
   # - we only capture the first IP as /etc/hosts doesn't support more than one anyway
   # - currently only IPv4 is supported --> IPv6 TODO
   local re='([0-9.]+)'
-  while IFS= read -r item ; do
+  while b_readLine item ; do
     hostname="${item##*/}"
     ip="$(qubesdb-read "/dns${item}")" || continue #items may have been removed in the meantime
     [[ "$ip" =~ $re ]] || { B_ERR="Unexpected IP format: $ip" ; B_E ; }
@@ -138,8 +139,7 @@ daemon_iter "$first_exec" "$ip"
 
 #start monitoring
 stdbuf -o0 -e0 qubesdb-watch -n-1 "/dns/" | {
-  local line=
-  while IFS= read -r line ; do
+  while b_readLine ; do
     daemon_iter "$first_exec" "$ip"
   done
   }
